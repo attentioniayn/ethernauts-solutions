@@ -1,0 +1,119 @@
+Level 1: just read methods and find password running the method with same name
+
+Level 2: just learn to use sendTransaction to call a function and send to invoke the fallback function
+
+Level 3: the constructor is mispelled, making it executable by anybody
+
+Level 4: create a second script that runs the first after predicting the result replicating the formula. CAREFUL: to generate a function selector, you only need the type of the args, not the names. The trailing 0s after the selectors are not a problem
+
+Level 5: call the function using a secondary contract, so as to have msg.sender != tx.origin
+
+Level 6: underflow exploit. Note that if a secondary contract is used to exploit it, need to transfer some funds to it first, otherwise it will fail. Just need to transfer 21 tokens to a different (!) address from the player, it will underflow. 
+
+Level 7: use the fact that delegate call keeps the caller's context to the function call. The given address is a TruffleContract that interacts with the second contract. Just do a direct transaction giving the pwn() function signature directly, if you use a contract, the contract will own it. Could also just find out the address of the single contracts and call pwn() yourself.
+Sol:
+sendTransaction({"from":player,"to":"0x97737be6b793e36465C2B659436b27aec1f69213", "data":"0xdd365b8b"}) 
+
+Level 8: create a contract that self-destructs towards the target. Note: remix-ide doesn't allow to preload ether into the contract at creation, so first deploy with the pwn function being payable and then call it while sending value. Errata: need to make constructor payable to pre-load ether.
+
+Level 9: nothing is private on the blockchain, especially input data to a transaction. Use etherscan's state tab.
+
+Level 10: re-entrancy bug. Exploit the transfer call made by the owner when taking over to execute arbitrary code in your receive function that sends the money again until the owner runs out of gas and reverts the transaction. Careful about running out of gas yourself, use call in the following form:
+payable(target).call{value: msg.value}("")
+Could even just directly throw an exception.
+
+Level 11: note that the low-level call opcode doesn't propagate exceptions. Revert probably triggered by safemath subtraction. The signature with type uint is different than type uint256!!!  Code worked, but forgot to add a way to get the eth out of the contract :)
+
+Level 12: very easy, just implement a modulo 2 counter in the function defined by the interface.
+
+Level 13: go to etherscan-> parent tx -> state and look for the last entry, since each bytes32 is split into a separate memory position. Take only the first 16 bytes of it. That's the key. Only tricky part is that in casting between integers, the bottom part of the data is kept, while with bytes the top part is.
+
+Level 14: gasleft tells how much gas is left for the transaction. Trial and error + math should be enough to figure out how much gas to give it such that the constraint is satisfied. Each call has its own indipendent gas pool. Remix seems to be bugged for what concerns gas limit, use web3 or other means to send transactions. That was painful.
+
+Level 15: EXTCODESIZE returns 0 if it is called from the constructor of a contract. Ez.
+
+Level 16: allow a contract to access your tokens using the approve() function and then transfer them using the contract. Used web3 js commands to set the allowance with approve().
+
+Level 17: two steps solution, first replace the setFirstTIme address using the delegatecall in setSecondTime. Then call the new contract in the setFirstTime to replace the owner. Note that for the delegate vulnerability to work, the attacker needs to be mindful of not initialising any variable as doing so may override the storage slots.
+
+Level 18: need to recover the money in the lost address of the contract created inside Recovery. Explore with etherscan. Then call destroy on it. Ez.
+
+Level 19: assembly... 
+Note that the return value after a create call, is the final code of the contract created, without the deployment code.
+
+Level 20: it uses an openZeppelin contract Ownable-05.sol. Underhanded because of the competition https://github.com/Arachnid/uscc/tree/master/submissions-2017/doughoyte . Inherited members seem to be at the start of the storage slots. Only state changes are highlighted in etherscan.
+Have a signature match in the contract seems expensive, switch to a fallback() approach.
+/*
+PUSH0
+PUSH0
+PUSH1 0x2a
+PUSH0
+MSTORE
+PUSH1 0x20
+PUSH0
+RETURN
+*/
+Take the boilerplate from a transaction creating a similar contract and send it to 0x0 with data equal to the concat of the 2.
+https://veridelisi.medium.com/learn-evm-opcodes-viii-d95e98259f37
+https://www.evm.codes/?fork=shanghai and the playground for testing
+Adjust the parameters of boilerplate's CODECOPY to avoid unnecessary STOP instructions. Code sent using sendTransaction(), not remix.
+PUSH0 used to reduce size of bytecode since doesn't need an argument.
+
+Level 21: re-entrancy again, loop until the gas limit is reached.
+
+Level 22: create a contract that implements the interface. View modifier means that the function can only read the state, not write it. This stops the module 2 counter from working. Try exploiting the state on the blockchain itself to see if the function has already been called (?). Doesn't seem likely, let's just do a coin flip (?). Just use the bool variables inside the contract itself using an interface, you dummy. Careful about deploy order in remix ide.
+
+Level 23: at address is a function in remix ide to retrieve existing contracts by using the compiled contract as reference.
+Can take all the tokens of one type at the start, due to swap price equal 1. Once the amount is zero, the swap price becomes also 0, no panic.
+There is a mismatch in the approve functions between swappable tokens and IERC due to overload of the method.
+Can use the non-exact division to gain incremental advantages, the division rounds down the price (Winner solution, just keep swapping).
+
+Level 24: can swap between the same token now but more interestingly, we can create a fake token and swap it for the real one!!! Do it two times with an initial supply of 101 for extra lazyness.
+
+Level 25: the implementation address for the proxy is stored at a specific point in storage to avoid interfering with the implementations' storage use. (https://eips.ethereum.org/EIPS/eip-1967 https://docs.openzeppelin.com/upgrades-plugins/1.x/proxies)
+Note: when a proxy exposes a function of the implementation, it calls it using delegatecall, not a simple call.
+Note2: the fallback function in a proxy does a delegatecall using the implementation!!! Check proxy.sol from openzeppelin.
+This allows us to override the admin by modifying maxBalance, but this is only possible if the contract doesn't have a balance. Which is actually the case! The balance belongs to the proxy contract not the implementation one! Cherry on top: since all the calls are delegated, the state changes are stored in the proxy and the implementation contract still has no init called!!!
+Owner is not explicitly set, it's assumed to be the same as the value in the first slot of the caller. If only we could write in the position that it would assume if initialised (proxy storage use)...
+The maxBalance hasn't been set either, it just takes the address of the admin...
+FML! Set pendingAdmin to be used as owner by the logic contract, use new acquired priviledge to gain whitelist access, "deposit" enough ethereal money to allow the withdrawal of all funds. This is done by recursively calling the multicall function in order to avoid the bool check, since msg.value is preserved by delegatecall. The withdrawal is done with execute, needs a payable address. Then just use the setMaxBalance to override the admin value.
+Note3: the message sender stays the same during delegatecall, therefore need to whitelist the address that calls the proxy first.
+Solidity doesn't support nested arrays are not supported for external calls!
+Understanding dynamic array encoding might be useful (https://docs.soliditylang.org/en/v0.8.21/abi-spec.html)
+Found out that the encoding was illegal due to allocating the bytes[] array using bytes[1] instead of new bytes[](1)!!!
+Also, when encoding dynamic types (ie bytes) use the new command (new bytes(0x0))!
+Use web3 instead of remix, weird OOG bugs again.
+Deposit 0.001 ether "twice" and withdraw 0.002.
+
+Level 26: a faulty initializable function can be called multiple times with different changes all along.
+The implementation handles the implementation switch through the delegatecall of the proxy and the access to its memory slots.
+Note: the memory slots used in the logic contract this time are allocated as normal, not using hashed values for the position.
+As seen in the previous exercise, the underlying implementation is not initialised. Initialise it with an upgrader under our control, create a contract that calls selfdestruct and call it from the engine. Note that this doesn't work anymore in newer solidity versions. This solution didn't work, contract is still working, need to destruct the proxy one.
+Initialized is not actually set in the proxy, the upgrader is cast as a bool.
+The bools of the Initializer modifier are packed together with the address of the upgrader...
+AAAA The solution suggested above was correct according to the hints at the end but it doesn't get accepted.
+Apparently for selfdestruct to still count, it must be called in the same transaction as when it's created....
+Note that Level is considered as an address for keccak signature purposes in methods.
+NOT SOLVABLE BY AN EOA PLAYER! Only by cheesing with a contract as "player". Learned to successfully compute addresses at least.
+
+Level 27: forta is notified before each transfer.
+All transfers must be requested by the legacy token contract.
+LGT owner is not initialized, therefore anyone can transfer.
+DET is the underlying token to cryptoVault.
+LGT is just a backdoor, sweeping its tokens will instead sweep the underlying det ones.
+Can't use delegatecall, just need to manually set the bot.
+The bot needs to call an alert, not use require.
+
+Level 28: need to create a contract, implement the notify interface in such a way as to return the signature of the wanted error and then use it to call target. The error will propagate but not show in the ABI-JSON. (https://soliditylang.org/blog/2021/04/21/custom-errors/)
+Need to not revert the remainder amount request.
+Note that the successful exploit reports an operation reverted warning, but the requestDonation call doesn't propagate it (return is 0x0, not the error).
+Careful about running out of gas with remix.
+
+Level 29: again 3 gates. Note that there is no infinite loop, the gatekeeper creates the simpletrick which itself references the gatekeeper that created it.
+Note we care about block.timestamp, not the block number (web3.eth.getBlock(blockNumber)).
+CAREFUL: if the argument is marked as private with underscore, the ABI ignores it, therefore getAllowance(uint256 _password) 's signature is actually computed using getAllowance(uint256)!
+
+Level 30: the idea is to keep the signature but send a CALLDATA so long that it's actually used to refer to a position in it rather than a function. Probably have to use arrays.
+The solution is much simpler/cheaper. Just build a calldata that uses a dynamic data type aka bytes, and points to a signature that is further away than the standard 0x20 bytes in the calldata.
+https://r4bbit.substack.com/p/abi-encoding-and-evm-calldata
+https://docs.soliditylang.org/en/latest/types.html#bytes-and-string-as-arrays
